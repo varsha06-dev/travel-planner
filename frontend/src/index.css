@@ -1,0 +1,85 @@
+/* ── Design Tokens ─────────────────────────────────────── */
+:root {
+  --bg:          #FAFAF8;
+  --surface:     #FFFFFF;
+  --surface-2:   #F4F3F0;
+  --border:      #E8E6E1;
+  --text-primary:#1C1917;
+  --text-muted:  #78716C;
+  --text-faint:  #A8A29E;
+  --accent:      #C9A96E;
+  --accent-soft: #F5ECD7;
+  --accent-dark: #A07840;
+  --user-bubble: #1C1917;
+  --user-text:   #FAFAF8;
+  --bot-bubble:  #FFFFFF;
+  --bot-border:  #E8E6E1;
+  --shadow-sm:   0 1px 3px rgba(0,0,0,0.06);
+  --shadow-md:   0 4px 16px rgba(0,0,0,0.08);
+  --radius:      12px;
+  --radius-sm:   8px;
+  --font-display:'Cormorant Garamond', Georgia, serif;
+  --font-body:   'DM Sans', system-ui, sans-serif;
+}
+
+/* ── Reset ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+/* ── Markdown in bot messages ───────────────────────────── */
+.prose h2 {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin: 1rem 0 0.4rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.prose h3 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin: 0.75rem 0 0.3rem;
+}
+.prose p  { margin: 0.4rem 0; line-height: 1.65; }
+.prose ul { padding-left: 1.2rem; margin: 0.4rem 0; }
+.prose li { margin: 0.2rem 0; line-height: 1.6; }
+.prose strong { color: var(--text-primary); font-weight: 500; }
+.prose em { color: var(--text-muted); }
+.prose img {
+  width: 100%;
+  max-width: 480px;
+  height: 200px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  margin: 8px 0 2px;
+  display: block;
+  box-shadow: var(--shadow-md);
+}
+
+.prose img + em {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  display: block;
+  margin-bottom: 10px;
+}
+.prose code {
+  font-size: 0.82em;
+  background: var(--surface-2);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}

@@ -1,0 +1,451 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+import uuid, json, os, sqlite3, urllib.request, urllib.parse, re
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dotenv import load_dotenv
+
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_core.tools import tool
+
+load_dotenv()
+
+MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
+
+# ── App Setup ─────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Travel Planner API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Database ──────────────────────────────────────────────────────────────────
+
+DB_PATH = "trips.db"
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, trip_info TEXT DEFAULT '{}',
+            messages TEXT DEFAULT '[]'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ── Message Serialization ─────────────────────────────────────────────────────
+# Messages are stored as JSON with optional visual data (places, route_data)
+# embedded in each AI message entry so they survive reloads.
+
+def serialize_messages(messages: list, visual_map: dict = None) -> str:
+    """
+    visual_map: {message_index: {"places": [...], "route_data": {...}}}
+    Embeds visual data into the stored JSON so it persists across reloads.
+    """
+    out = []
+    for i, m in enumerate(messages):
+        if isinstance(m, HumanMessage):
+            out.append({"role": "human", "content": m.content})
+        elif isinstance(m, AIMessage):
+            entry = {"role": "ai", "content": m.content}
+            if visual_map and i in visual_map:
+                vd = visual_map[i]
+                if vd.get("places"):     entry["places"]     = vd["places"]
+                if vd.get("route_data"): entry["route_data"] = vd["route_data"]
+            out.append(entry)
+    return json.dumps(out)
+
+def deserialize_messages(raw: str):
+    """
+    Returns (langchain_messages, visual_map) so visual data
+    is preserved when the session is updated and re-saved.
+    """
+    data       = json.loads(raw)
+    messages   = []
+    visual_map = {}
+    for i, m in enumerate(data):
+        if m["role"] == "human":
+            messages.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "ai":
+            messages.append(AIMessage(content=m["content"]))
+            vd = {}
+            if m.get("places"):     vd["places"]     = m["places"]
+            if m.get("route_data"): vd["route_data"] = m["route_data"]
+            if vd: visual_map[i] = vd
+    return messages, visual_map
+
+# ── DB Helpers ────────────────────────────────────────────────────────────────
+
+def load_session(sid: str):
+    """Returns (langchain_messages, visual_map)."""
+    conn = get_db()
+    row  = conn.execute("SELECT messages FROM sessions WHERE id=?", (sid,)).fetchone()
+    conn.close()
+    if not row: return [], {}
+    return deserialize_messages(row["messages"])
+
+def save_session(sid: str, messages: list, trip_info: dict, visual_map: dict = None):
+    now  = datetime.utcnow().isoformat()
+    data = serialize_messages(messages, visual_map or {})
+    conn = get_db()
+    if conn.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone():
+        conn.execute(
+            "UPDATE sessions SET messages=?,trip_info=?,updated_at=? WHERE id=?",
+            (data, json.dumps(trip_info), now, sid)
+        )
+    else:
+        conn.execute(
+            "INSERT INTO sessions VALUES (?,?,?,?,?)",
+            (sid, now, now, json.dumps(trip_info), data)
+        )
+    conn.commit(); conn.close()
+
+def delete_session(sid: str):
+    conn = get_db()
+    conn.execute("DELETE FROM sessions WHERE id=?", (sid,))
+    conn.commit(); conn.close()
+
+def list_sessions() -> list:
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id,created_at,updated_at,trip_info FROM sessions ORDER BY updated_at DESC"
+    ).fetchall()
+    conn.close()
+    return [{"id": r["id"], "created_at": r["created_at"], "updated_at": r["updated_at"],
+             "trip_info": json.loads(r["trip_info"] or "{}")} for r in rows]
+
+# ── Unsplash ──────────────────────────────────────────────────────────────────
+
+def fetch_one_image(query: str) -> Optional[dict]:
+    key = os.getenv("UNSPLASH_ACCESS_KEY")
+    if not key: return None
+    params = urllib.parse.urlencode({"query": query, "per_page": 1,
+                                     "orientation": "landscape", "client_id": key})
+    try:
+        with urllib.request.urlopen(
+            f"https://api.unsplash.com/search/photos?{params}", timeout=8
+        ) as r:
+            data = json.loads(r.read().decode())
+        results = data.get("results", [])
+        if not results: return None
+        p = results[0]
+        return {"url": p["urls"]["regular"], "alt": p.get("alt_description") or query,
+                "credit": p["user"]["name"], "credit_url": p["user"]["links"]["html"]}
+    except: return None
+
+def fetch_place_images(places: list) -> list:
+    if not places: return []
+    def fetch(place):
+        return {**place, "image": fetch_one_image(place["name"])}
+    results = []
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futures = {ex.submit(fetch, p): p for p in places}
+        for f in as_completed(futures):
+            r = f.result()
+            if r.get("image"): results.append(r)
+    order = {p["name"]: i for i, p in enumerate(places)}
+    results.sort(key=lambda r: order.get(r["name"], 99))
+    return results
+
+# ── Mapbox ────────────────────────────────────────────────────────────────────
+
+def geocode(place_name: str, context: str = "") -> Optional[dict]:
+    if not MAPBOX_TOKEN: return None
+    query = urllib.parse.quote(f"{place_name} {context}".strip())
+    url   = (f"https://api.mapbox.com/geocoding/v5/mapbox.places/{query}.json"
+             f"?access_token={MAPBOX_TOKEN}&limit=1&types=poi,address,place")
+    try:
+        with urllib.request.urlopen(url, timeout=6) as r:
+            data = json.loads(r.read().decode())
+        feats = data.get("features", [])
+        if not feats: return None
+        lng, lat = feats[0]["center"]
+        return {"lng": round(lng, 6), "lat": round(lat, 6)}
+    except: return None
+
+def get_directions(coords: list, mode: str = "driving") -> Optional[dict]:
+    if not MAPBOX_TOKEN or len(coords) < 2: return None
+    coord_str = ";".join(f"{c['lng']},{c['lat']}" for c in coords)
+    url = (f"https://api.mapbox.com/directions/v5/mapbox/{mode}/{coord_str}"
+           f"?access_token={MAPBOX_TOKEN}&geometries=geojson&overview=full&steps=false")
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = json.loads(r.read().decode())
+        routes = data.get("routes", [])
+        if not routes: return None
+        route = routes[0]
+        return {
+            "geometry": route["geometry"],
+            "legs": [{"duration_min": max(1, round(leg["duration"] / 60)),
+                      "distance_km":  round(leg["distance"] / 1000, 1)}
+                     for leg in route.get("legs", [])],
+        }
+    except: return None
+
+def build_day_map(day_data: dict, destination_context: str) -> Optional[dict]:
+    stops = day_data.get("stops", [])
+    if len(stops) < 2: return None
+
+    def geocode_stop(stop):
+        coords = geocode(stop["name"], destination_context)
+        return {**stop, **(coords or {})}
+
+    geocoded = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {ex.submit(geocode_stop, s): s for s in stops}
+        for f in as_completed(futures): geocoded.append(f.result())
+
+    order = {s["name"]: i for i, s in enumerate(stops)}
+    geocoded.sort(key=lambda s: order.get(s["name"], 99))
+    valid = [s for s in geocoded if "lng" in s and "lat" in s]
+    if len(valid) < 2: return None
+
+    directions = get_directions(valid)
+    if directions:
+        for i, leg in enumerate(directions["legs"]):
+            if i < len(valid) - 1:
+                valid[i]["duration_to_next_min"] = leg["duration_min"]
+                valid[i]["distance_to_next_km"]  = leg["distance_km"]
+
+    return {
+        "day":            day_data["day"],
+        "title":          day_data.get("title", f"Day {day_data['day']}"),
+        "stops":          valid,
+        "route_geometry": directions["geometry"] if directions else None,
+    }
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
+
+search_tool = TavilySearchResults(max_results=5,
+    description="Search the web for current travel information, best times to visit, "
+                "local tips, visa requirements, and destination guides.")
+
+@tool
+def get_best_time_to_visit(destination: str) -> str:
+    """Get the best time of year to visit a destination and current weather patterns."""
+    return str(TavilySearchResults(max_results=3).invoke(
+        f"best time to visit {destination} weather seasons travel"))
+
+@tool
+def find_activities(destination: str, interests: Optional[str] = None) -> str:
+    """Find top activities, attractions, and places to visit at a destination."""
+    q = f"top things to do in {destination}"
+    if interests: q += f" for people who like {interests}"
+    return str(TavilySearchResults(max_results=5).invoke(q))
+
+@tool
+def estimate_flight_costs(origin: str, destination: str, travel_dates: str) -> str:
+    """Get a rough estimate of flight costs between two cities for given dates."""
+    return str(TavilySearchResults(max_results=3).invoke(
+        f"flight prices {origin} to {destination} {travel_dates} cost estimate"))
+
+@tool
+def estimate_hotel_costs(destination: str, budget_level: str = "mid-range") -> str:
+    """Get hotel cost estimates for a destination at a given budget level."""
+    return str(TavilySearchResults(max_results=3).invoke(
+        f"{budget_level} hotels in {destination} price per night"))
+
+ALL_TOOLS     = [search_tool, get_best_time_to_visit, find_activities,
+                 estimate_flight_costs, estimate_hotel_costs]
+TOOLS_BY_NAME = {t.name: t for t in ALL_TOOLS}
+
+# ── Models & Prompts ──────────────────────────────────────────────────────────
+
+model            = ChatAnthropic(model="claude-sonnet-4-6")
+model_with_tools = model.bind_tools(ALL_TOOLS)
+extractor        = ChatAnthropic(model="claude-sonnet-4-6")
+
+SYSTEM_PROMPT = """You are an expert vacation planner with access to real-time travel data.
+
+Your process:
+1. COLLECT INFO — Through friendly conversation, gather budget, number of travelers and ages,
+   trip duration, destination preferences, interests/dislikes, departure city, travel dates.
+2. RESEARCH — Use your tools to look up best times to visit, activities, flight/hotel costs.
+3. GENERATE PLAN — Create a detailed day-by-day itinerary with specific named places,
+   estimated costs, hotel recommendations, and practical travel tips.
+4. REFINE — Accept feedback and update the plan accordingly.
+
+Don't ask all questions at once. Use search tools before generating the final plan.
+Always be specific — use real named places, hotels, restaurants, and attractions.
+Format plans using markdown: ## headers, bullet points, **bold** for place names."""
+
+EXTRACTION_PROMPT = """Extract the CURRENT trip details. Use the most recent info if changed.
+Return ONLY JSON (null for anything not mentioned):
+{{"destination":null,"travelers":null,"duration":null,"budget":null,"when":null,"departure_city":null}}
+Conversation: {conversation}"""
+
+PLACES_PROMPT = """Extract specific named places from this response (max 6, most interesting first).
+Return ONLY a JSON array: [{{"name":"...","description":"under 10 words"}}]
+Return [] if fewer than 2 named places. Response: {reply}"""
+
+ITINERARY_PROMPT = """If this response contains a day-by-day itinerary with specific named locations,
+extract the stops for each day in visit order.
+
+Return ONLY a JSON array (max 3 days, 5 stops each):
+[{{"day":1,"title":"Short title","stops":[{{"name":"Exact place name","type":"hotel|attraction|restaurant|viewpoint|beach|market|museum|other"}}]}}]
+
+Rules:
+- Only SPECIFIC named places (real hotel/restaurant/landmark names)
+- Stops in ORDER they are visited; first stop is usually the hotel
+- Return [] if no day-by-day plan with named places
+
+Response: {reply}"""
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def run_agent(user_input: str, history: list) -> str:
+    messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=user_input)]
+    while True:
+        response = model_with_tools.invoke(messages)
+        messages.append(response)
+        if not response.tool_calls: break
+        for tc in response.tool_calls:
+            fn = TOOLS_BY_NAME.get(tc["name"])
+            if fn: messages.append(ToolMessage(content=str(fn.invoke(tc["args"])),
+                                               tool_call_id=tc["id"]))
+    return response.content
+
+def llm_extract(prompt_template: str, **kwargs):
+    try:
+        raw = extractor.invoke([HumanMessage(
+            content=prompt_template.format(**kwargs))]).content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"): raw = raw[4:]
+        return json.loads(raw.strip())
+    except: return None
+
+def extract_trip_info(history, latest_user, latest_reply):
+    conv = "".join(
+        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}\n"
+        for m in history
+    ) + f"User: {latest_user}\nAssistant: {latest_reply}\n"
+    data = llm_extract(EXTRACTION_PROMPT, conversation=conv)
+    if not isinstance(data, dict): return {}
+    return {k: v for k, v in data.items() if v is not None}
+
+def extract_places(reply: str) -> list:
+    data = llm_extract(PLACES_PROMPT, reply=reply)
+    return data[:6] if isinstance(data, list) else []
+
+def extract_route_maps(reply: str, trip_info: dict) -> Optional[dict]:
+    if not MAPBOX_TOKEN: return None
+    if not re.search(r'\bday\s*[1-9]\b', reply, re.IGNORECASE): return None
+    days = llm_extract(ITINERARY_PROMPT, reply=reply)
+    if not isinstance(days, list) or not days: return None
+    destination = trip_info.get("destination", "")
+    built = [build_day_map(d, destination) for d in days[:3]]
+    built = [d for d in built if d]
+    return {"days": built} if built else None
+
+# ── Request / Response Models ──────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    message:    str
+    session_id: Optional[str] = None
+
+class ChatResponse(BaseModel):
+    reply:      str
+    session_id: str
+    trip_info:  Optional[dict] = None
+    places:     Optional[list] = None
+    route_data: Optional[dict] = None
+
+class SessionSummary(BaseModel):
+    id: str; created_at: str; updated_at: str; trip_info: dict
+
+class LoadResponse(BaseModel):
+    session_id: str; trip_info: dict; messages: list
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    sid               = req.session_id or str(uuid.uuid4())
+    history, visual_map = load_session(sid)   # ← also loads existing visual data
+
+    try:
+        reply      = run_agent(req.message, history)
+        trip_info  = extract_trip_info(history, req.message, reply)
+        raw_places = extract_places(reply)
+        places     = fetch_place_images(raw_places) if raw_places else []
+        route_data = extract_route_maps(reply, trip_info)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    history.append(HumanMessage(content=req.message))
+    history.append(AIMessage(content=reply))
+
+    # Store visual data at the index of the new AI message
+    new_ai_idx = len(history) - 1
+    if places or route_data:
+        visual_map[new_ai_idx] = {
+            **({"places":     places}     if places     else {}),
+            **({"route_data": route_data} if route_data else {}),
+        }
+
+    save_session(sid, history, trip_info, visual_map)
+
+    return ChatResponse(reply=reply, session_id=sid, trip_info=trip_info,
+                        places=places or None, route_data=route_data)
+
+
+@app.get("/sessions", response_model=list[SessionSummary])
+async def get_sessions(): return list_sessions()
+
+
+@app.get("/sessions/{sid}", response_model=LoadResponse)
+async def get_session(sid: str):
+    conn = get_db()
+    row  = conn.execute("SELECT * FROM sessions WHERE id=?", (sid,)).fetchone()
+    conn.close()
+    if not row: raise HTTPException(status_code=404, detail="Session not found")
+
+    data = json.loads(row["messages"])
+    frontend_messages = []
+    for m in data:
+        entry = {
+            "role":    "human" if m["role"] == "human" else "ai",
+            "content": m["content"],
+        }
+        # Restore visual data if it was saved with this message
+        if m.get("places"):     entry["places"]     = m["places"]
+        if m.get("route_data"): entry["route_data"] = m["route_data"]
+        frontend_messages.append(entry)
+
+    return LoadResponse(
+        session_id=sid,
+        trip_info=json.loads(row["trip_info"] or "{}"),
+        messages=frontend_messages,
+    )
+
+
+@app.delete("/sessions/{sid}")
+async def remove_session(sid: str):
+    delete_session(sid); return {"status": "deleted"}
+
+
+@app.get("/health")
+async def health(): return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
