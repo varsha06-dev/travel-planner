@@ -6,8 +6,8 @@ import uuid, json, os, urllib.request, urllib.parse, re, math
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
-import psycopg2
-import psycopg2.extras
+import pg8000
+import pg8000.dbapi
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -39,9 +39,17 @@ app.add_middleware(
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def get_db():
-    """Open a new Supabase/Postgres connection for each request."""
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
+    """Open a new Supabase/Postgres connection using pg8000 (pure Python, no binary needed)."""
+    import urllib.parse as up
+    r = up.urlparse(DATABASE_URL)
+    return pg8000.dbapi.connect(
+        host=r.hostname,
+        port=r.port or 5432,
+        database=r.path.lstrip("/"),
+        user=r.username,
+        password=r.password,
+        ssl_context=True,
+    )
 
 def init_db():
     """Create the sessions table if it doesn't exist yet."""
@@ -96,7 +104,8 @@ def deserialize_messages(raw: str):
 
 def load_session(sid: str):
     conn = get_db()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    conn.row_factory = pg8000.dbapi.DictRowFactory
+    with conn.cursor() as cur:
         cur.execute("SELECT messages FROM sessions WHERE id = %s", (sid,))
         row = cur.fetchone()
     conn.close()
@@ -129,7 +138,8 @@ def delete_session(sid: str):
 
 def list_sessions() -> list:
     conn = get_db()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    conn.row_factory = pg8000.dbapi.DictRowFactory
+    with conn.cursor() as cur:
         cur.execute(
             "SELECT id, created_at, updated_at, trip_info FROM sessions ORDER BY updated_at DESC"
         )
@@ -492,7 +502,8 @@ async def get_sessions(): return list_sessions()
 @app.get("/sessions/{sid}", response_model=LoadResponse)
 async def get_session(sid: str):
     conn = get_db()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    conn.row_factory = pg8000.dbapi.DictRowFactory
+    with conn.cursor() as cur:
         cur.execute("SELECT * FROM sessions WHERE id = %s", (sid,))
         row = cur.fetchone()
     conn.close()
