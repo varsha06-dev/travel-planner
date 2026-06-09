@@ -44,11 +44,12 @@ def get_db():
     r = up.urlparse(DATABASE_URL)
     return pg8000.dbapi.connect(
         host=r.hostname,
-        port=r.port or 5432,
+        port=r.port or 6543,
         database=r.path.lstrip("/"),
         user=r.username,
         password=r.password,
         ssl_context=True,
+        timeout=10,
     )
 
 def init_db():
