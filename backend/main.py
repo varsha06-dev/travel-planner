@@ -72,7 +72,8 @@ def get_db():
 def init_db():
     """Create the sessions table if it doesn't exist yet."""
     conn = get_db()
-    with conn.cursor() as cur:
+    cur = conn.cursor()
+    try:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 id          TEXT PRIMARY KEY,
@@ -82,6 +83,8 @@ def init_db():
                 messages    TEXT DEFAULT '[]'
             )
         """)
+    finally:
+        cur.close()
     conn.commit()
     conn.close()
 
@@ -123,9 +126,12 @@ def deserialize_messages(raw: str):
 def load_session(sid: str):
     conn = get_db()
     conn.row_factory = pg8000.dbapi.DictRowFactory
-    with conn.cursor() as cur:
+    cur = conn.cursor()
+    try:
         cur.execute("SELECT messages FROM sessions WHERE id = %s", (sid,))
         row = cur.fetchone()
+    finally:
+        cur.close()
     conn.close()
     if not row: return [], {}
     return deserialize_messages(row["messages"])
@@ -134,7 +140,8 @@ def save_session(sid: str, messages: list, trip_info: dict, visual_map: dict = N
     now  = datetime.utcnow().isoformat()
     data = serialize_messages(messages, visual_map or {})
     conn = get_db()
-    with conn.cursor() as cur:
+    cur = conn.cursor()
+    try:
         # Upsert — insert if new, update if exists
         cur.execute("""
             INSERT INTO sessions (id, created_at, updated_at, trip_info, messages)
@@ -144,24 +151,32 @@ def save_session(sid: str, messages: list, trip_info: dict, visual_map: dict = N
                   trip_info  = EXCLUDED.trip_info,
                   updated_at = EXCLUDED.updated_at
         """, (sid, now, now, json.dumps(trip_info), data))
+    finally:
+        cur.close()
     conn.commit()
     conn.close()
 
 def delete_session(sid: str):
     conn = get_db()
-    with conn.cursor() as cur:
+    cur = conn.cursor()
+    try:
         cur.execute("DELETE FROM sessions WHERE id = %s", (sid,))
+    finally:
+        cur.close()
     conn.commit()
     conn.close()
 
 def list_sessions() -> list:
     conn = get_db()
     conn.row_factory = pg8000.dbapi.DictRowFactory
-    with conn.cursor() as cur:
+    cur = conn.cursor()
+    try:
         cur.execute(
             "SELECT id, created_at, updated_at, trip_info FROM sessions ORDER BY updated_at DESC"
         )
         rows = cur.fetchall()
+    finally:
+        cur.close()
     conn.close()
     return [
         {"id":         r["id"],
@@ -521,9 +536,12 @@ async def get_sessions(): return list_sessions()
 async def get_session(sid: str):
     conn = get_db()
     conn.row_factory = pg8000.dbapi.DictRowFactory
-    with conn.cursor() as cur:
+    cur = conn.cursor()
+    try:
         cur.execute("SELECT * FROM sessions WHERE id = %s", (sid,))
         row = cur.fetchone()
+    finally:
+        cur.close()
     conn.close()
     if not row: raise HTTPException(status_code=404, detail="Session not found")
     data = json.loads(row["messages"])
