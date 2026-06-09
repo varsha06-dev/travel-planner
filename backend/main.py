@@ -39,16 +39,31 @@ app.add_middleware(
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def get_db():
-    """Open a new Supabase/Postgres connection using pg8000 (pure Python, no binary needed)."""
-    import urllib.parse as up
-    r = up.urlparse(DATABASE_URL)
+    """Open a Supabase/Postgres connection using pg8000 (pure Python, no binary needed).
+    Manually parses the DATABASE_URL to handle Supabase pooler usernames like postgres.xxxx
+    which Python's urlparse misreads.
+    """
+    import re, ssl
+    # Match: postgresql://user:password@host:port/dbname
+    # user may contain dots (e.g. postgres.abcdef) — use a greedy split on last @ 
+    url = DATABASE_URL.replace("postgresql://", "").replace("postgres://", "")
+    credentials, rest = url.rsplit("@", 1)
+    user, password = credentials.split(":", 1)
+    host_port, dbname = rest.split("/", 1)
+    if ":" in host_port:
+        host, port_str = host_port.rsplit(":", 1)
+        port = int(port_str)
+    else:
+        host = host_port
+        port = 6543
+    ctx = ssl.create_default_context()
     return pg8000.dbapi.connect(
-        host=r.hostname,
-        port=r.port or 6543,
-        database=r.path.lstrip("/"),
-        user=r.username,
-        password=r.password,
-        ssl_context=True,
+        host=host,
+        port=port,
+        database=dbname,
+        user=user,
+        password=password,
+        ssl_context=ctx,
         timeout=10,
     )
 
