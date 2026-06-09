@@ -2,10 +2,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import uuid, json, os, sqlite3, urllib.request, urllib.parse, re
+import uuid, json, os, urllib.request, urllib.parse, re, math
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
+import psycopg2
+import psycopg2.extras
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -15,13 +17,20 @@ from langchain_core.tools import tool
 load_dotenv()
 
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
+DATABASE_URL = os.getenv("DATABASE_URL")   # Set this in Render env vars
 
 # ── App Setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Travel Planner API")
+
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    os.getenv("ALLOWED_ORIGIN", ""),
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[o for o in ALLOWED_ORIGINS if o],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,36 +38,32 @@ app.add_middleware(
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
-DB_PATH = "trips.db"
-
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    """Open a new Supabase/Postgres connection for each request."""
+    conn = psycopg2.connect(DATABASE_URL)
     return conn
 
 def init_db():
+    """Create the sessions table if it doesn't exist yet."""
     conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL, trip_info TEXT DEFAULT '{}',
-            messages TEXT DEFAULT '[]'
-        )
-    """)
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id          TEXT PRIMARY KEY,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                trip_info   TEXT DEFAULT '{}',
+                messages    TEXT DEFAULT '[]'
+            )
+        """)
     conn.commit()
     conn.close()
 
 init_db()
 
 # ── Message Serialization ─────────────────────────────────────────────────────
-# Messages are stored as JSON with optional visual data (places, route_data)
-# embedded in each AI message entry so they survive reloads.
 
 def serialize_messages(messages: list, visual_map: dict = None) -> str:
-    """
-    visual_map: {message_index: {"places": [...], "route_data": {...}}}
-    Embeds visual data into the stored JSON so it persists across reloads.
-    """
     out = []
     for i, m in enumerate(messages):
         if isinstance(m, HumanMessage):
@@ -73,10 +78,6 @@ def serialize_messages(messages: list, visual_map: dict = None) -> str:
     return json.dumps(out)
 
 def deserialize_messages(raw: str):
-    """
-    Returns (langchain_messages, visual_map) so visual data
-    is preserved when the session is updated and re-saved.
-    """
     data       = json.loads(raw)
     messages   = []
     visual_map = {}
@@ -94,9 +95,10 @@ def deserialize_messages(raw: str):
 # ── DB Helpers ────────────────────────────────────────────────────────────────
 
 def load_session(sid: str):
-    """Returns (langchain_messages, visual_map)."""
     conn = get_db()
-    row  = conn.execute("SELECT messages FROM sessions WHERE id=?", (sid,)).fetchone()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT messages FROM sessions WHERE id = %s", (sid,))
+        row = cur.fetchone()
     conn.close()
     if not row: return [], {}
     return deserialize_messages(row["messages"])
@@ -105,31 +107,41 @@ def save_session(sid: str, messages: list, trip_info: dict, visual_map: dict = N
     now  = datetime.utcnow().isoformat()
     data = serialize_messages(messages, visual_map or {})
     conn = get_db()
-    if conn.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone():
-        conn.execute(
-            "UPDATE sessions SET messages=?,trip_info=?,updated_at=? WHERE id=?",
-            (data, json.dumps(trip_info), now, sid)
-        )
-    else:
-        conn.execute(
-            "INSERT INTO sessions VALUES (?,?,?,?,?)",
-            (sid, now, now, json.dumps(trip_info), data)
-        )
-    conn.commit(); conn.close()
+    with conn.cursor() as cur:
+        # Upsert — insert if new, update if exists
+        cur.execute("""
+            INSERT INTO sessions (id, created_at, updated_at, trip_info, messages)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE
+              SET messages   = EXCLUDED.messages,
+                  trip_info  = EXCLUDED.trip_info,
+                  updated_at = EXCLUDED.updated_at
+        """, (sid, now, now, json.dumps(trip_info), data))
+    conn.commit()
+    conn.close()
 
 def delete_session(sid: str):
     conn = get_db()
-    conn.execute("DELETE FROM sessions WHERE id=?", (sid,))
-    conn.commit(); conn.close()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM sessions WHERE id = %s", (sid,))
+    conn.commit()
+    conn.close()
 
 def list_sessions() -> list:
     conn = get_db()
-    rows = conn.execute(
-        "SELECT id,created_at,updated_at,trip_info FROM sessions ORDER BY updated_at DESC"
-    ).fetchall()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT id, created_at, updated_at, trip_info FROM sessions ORDER BY updated_at DESC"
+        )
+        rows = cur.fetchall()
     conn.close()
-    return [{"id": r["id"], "created_at": r["created_at"], "updated_at": r["updated_at"],
-             "trip_info": json.loads(r["trip_info"] or "{}")} for r in rows]
+    return [
+        {"id":         r["id"],
+         "created_at": r["created_at"],
+         "updated_at": r["updated_at"],
+         "trip_info":  json.loads(r["trip_info"] or "{}")}
+        for r in rows
+    ]
 
 # ── Unsplash ──────────────────────────────────────────────────────────────────
 
@@ -166,11 +178,65 @@ def fetch_place_images(places: list) -> list:
 
 # ── Mapbox ────────────────────────────────────────────────────────────────────
 
-def geocode(place_name: str, context: str = "") -> Optional[dict]:
+def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Straight-line distance in km between two lat/lng points."""
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlng / 2) ** 2)
+    return R * 2 * math.asin(math.sqrt(a))
+
+
+def bbox_from_center(lat: float, lng: float, radius_km: float = 80) -> list:
+    """Return [west, south, east, north] bounding box around a point."""
+    dlat = radius_km / 111.0
+    dlng = radius_km / (111.0 * math.cos(math.radians(lat)))
+    return [lng - dlng, lat - dlat, lng + dlng, lat + dlat]
+
+
+def get_destination_center(destination: str) -> Optional[dict]:
+    """
+    Geocode the destination at region/place level to get its center and
+    compute a bounding box. Used to constrain all stop lookups to the
+    same island or city area — prevents "Maui" stops resolving to Molokai.
+    """
     if not MAPBOX_TOKEN: return None
-    query = urllib.parse.quote(f"{place_name} {context}".strip())
-    url   = (f"https://api.mapbox.com/geocoding/v5/mapbox.places/{query}.json"
-             f"?access_token={MAPBOX_TOKEN}&limit=1&types=poi,address,place")
+    query  = urllib.parse.quote(destination)
+    url    = (f"https://api.mapbox.com/geocoding/v5/mapbox.places/{query}.json"
+              f"?access_token={MAPBOX_TOKEN}&limit=1&types=place,region,locality")
+    try:
+        with urllib.request.urlopen(url, timeout=6) as r:
+            data = json.loads(r.read().decode())
+        feats = data.get("features", [])
+        if not feats: return None
+        feat      = feats[0]
+        lng, lat  = feat["center"]
+        # Use Mapbox's own bbox if available, else build one from the center
+        mapbox_bb = feat.get("bbox")
+        bbox      = mapbox_bb if mapbox_bb else bbox_from_center(lat, lng, radius_km=80)
+        return {"lng": round(lng, 6), "lat": round(lat, 6), "bbox": bbox}
+    except: return None
+
+
+def geocode(place_name: str, context: str = "",
+            proximity: dict = None,
+            bbox: list = None) -> Optional[dict]:
+    """
+    Geocode a place name with optional proximity bias and bounding box.
+    bbox   = [west, south, east, north] — hard-constrains results to this area,
+             preventing cross-island or cross-country mismatches.
+    proximity = {lng, lat} — soft bias toward this point within the bbox.
+    """
+    if not MAPBOX_TOKEN: return None
+    query  = urllib.parse.quote(f"{place_name} {context}".strip())
+    params = f"access_token={MAPBOX_TOKEN}&limit=1&types=poi,address,place"
+    if proximity:
+        params += f"&proximity={proximity['lng']},{proximity['lat']}"
+    if bbox:
+        params += f"&bbox={','.join(str(round(b, 4)) for b in bbox)}"
+    url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{query}.json?{params}"
     try:
         with urllib.request.urlopen(url, timeout=6) as r:
             data = json.loads(r.read().decode())
@@ -179,6 +245,7 @@ def geocode(place_name: str, context: str = "") -> Optional[dict]:
         lng, lat = feats[0]["center"]
         return {"lng": round(lng, 6), "lat": round(lat, 6)}
     except: return None
+
 
 def get_directions(coords: list, mode: str = "driving") -> Optional[dict]:
     if not MAPBOX_TOKEN or len(coords) < 2: return None
@@ -199,12 +266,24 @@ def get_directions(coords: list, mode: str = "driving") -> Optional[dict]:
         }
     except: return None
 
+
 def build_day_map(day_data: dict, destination_context: str) -> Optional[dict]:
     stops = day_data.get("stops", [])
     if len(stops) < 2: return None
 
+    # Step 1: get the destination's center + bounding box.
+    # The bbox is passed to every stop geocode call so results are
+    # constrained to the same island/region — no more cross-island routes.
+    dest_info = get_destination_center(destination_context) if destination_context else None
+    dest_bbox = dest_info["bbox"] if dest_info else None
+    dest_prox = dest_info           # {lng, lat, bbox} — used as proximity too
+
     def geocode_stop(stop):
-        coords = geocode(stop["name"], destination_context)
+        coords = geocode(
+            stop["name"], destination_context,
+            proximity=dest_prox,
+            bbox=dest_bbox,
+        )
         return {**stop, **(coords or {})}
 
     geocoded = []
@@ -214,7 +293,20 @@ def build_day_map(day_data: dict, destination_context: str) -> Optional[dict]:
 
     order = {s["name"]: i for i, s in enumerate(stops)}
     geocoded.sort(key=lambda s: order.get(s["name"], 99))
-    valid = [s for s in geocoded if "lng" in s and "lat" in s]
+
+    # Step 2: filter out stops that failed geocoding or landed impossibly
+    # far from the destination center (catches offshore/ocean results).
+    MAX_DIST_KM = 120
+    valid = []
+    for s in geocoded:
+        if "lng" not in s or "lat" not in s:
+            continue
+        if dest_info:
+            dist = haversine_km(dest_info["lat"], dest_info["lng"], s["lat"], s["lng"])
+            if dist > MAX_DIST_KM:
+                continue   # discard — wrong island or country
+        valid.append(s)
+
     if len(valid) < 2: return None
 
     directions = get_directions(valid)
@@ -297,16 +389,10 @@ Return [] if fewer than 2 named places. Response: {reply}"""
 
 ITINERARY_PROMPT = """If this response contains a day-by-day itinerary with specific named locations,
 extract the stops for each day in visit order.
-
 Return ONLY a JSON array (max 3 days, 5 stops each):
 [{{"day":1,"title":"Short title","stops":[{{"name":"Exact place name","type":"hotel|attraction|restaurant|viewpoint|beach|market|museum|other"}}]}}]
-
-Rules:
-- Only SPECIFIC named places (real hotel/restaurant/landmark names)
-- Stops in ORDER they are visited; first stop is usually the hotel
-- Return [] if no day-by-day plan with named places
-
-Response: {reply}"""
+Rules: only SPECIFIC named places, stops in ORDER visited, first stop usually the hotel.
+Return [] if no day-by-day plan with named places. Response: {reply}"""
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -378,9 +464,8 @@ class LoadResponse(BaseModel):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    sid               = req.session_id or str(uuid.uuid4())
-    history, visual_map = load_session(sid)   # ← also loads existing visual data
-
+    sid                 = req.session_id or str(uuid.uuid4())
+    history, visual_map = load_session(sid)
     try:
         reply      = run_agent(req.message, history)
         trip_info  = extract_trip_info(history, req.message, reply)
@@ -389,63 +474,46 @@ async def chat(req: ChatRequest):
         route_data = extract_route_maps(reply, trip_info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     history.append(HumanMessage(content=req.message))
     history.append(AIMessage(content=reply))
-
-    # Store visual data at the index of the new AI message
     new_ai_idx = len(history) - 1
     if places or route_data:
         visual_map[new_ai_idx] = {
             **({"places":     places}     if places     else {}),
             **({"route_data": route_data} if route_data else {}),
         }
-
     save_session(sid, history, trip_info, visual_map)
-
     return ChatResponse(reply=reply, session_id=sid, trip_info=trip_info,
                         places=places or None, route_data=route_data)
-
 
 @app.get("/sessions", response_model=list[SessionSummary])
 async def get_sessions(): return list_sessions()
 
-
 @app.get("/sessions/{sid}", response_model=LoadResponse)
 async def get_session(sid: str):
     conn = get_db()
-    row  = conn.execute("SELECT * FROM sessions WHERE id=?", (sid,)).fetchone()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM sessions WHERE id = %s", (sid,))
+        row = cur.fetchone()
     conn.close()
     if not row: raise HTTPException(status_code=404, detail="Session not found")
-
     data = json.loads(row["messages"])
     frontend_messages = []
     for m in data:
-        entry = {
-            "role":    "human" if m["role"] == "human" else "ai",
-            "content": m["content"],
-        }
-        # Restore visual data if it was saved with this message
+        entry = {"role": "human" if m["role"] == "human" else "ai", "content": m["content"]}
         if m.get("places"):     entry["places"]     = m["places"]
         if m.get("route_data"): entry["route_data"] = m["route_data"]
         frontend_messages.append(entry)
-
-    return LoadResponse(
-        session_id=sid,
-        trip_info=json.loads(row["trip_info"] or "{}"),
-        messages=frontend_messages,
-    )
-
+    return LoadResponse(session_id=sid, trip_info=json.loads(row["trip_info"] or "{}"),
+                        messages=frontend_messages)
 
 @app.delete("/sessions/{sid}")
 async def remove_session(sid: str):
     delete_session(sid); return {"status": "deleted"}
 
-
 @app.get("/health")
 async def health(): return {"status": "ok"}
 
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=False)
