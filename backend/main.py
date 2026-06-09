@@ -57,6 +57,8 @@ def get_db():
         host = host_port
         port = 6543
     ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     return pg8000.dbapi.connect(
         host=host,
         port=port,
