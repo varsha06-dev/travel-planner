@@ -69,16 +69,16 @@ export default function App() {
   }, [sessionId, startOver])
 
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)', position: 'relative' }}>
+  <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)', position: 'relative' }}>
 
-      {/* Dark overlay on mobile when sidebar open */}
-      {isMobile && sidebarOpen && (
-        <div onClick={() => setSidebarOpen(false)} style={{
-          position: 'fixed', inset: 0,
-          background: 'rgba(0,0,0,0.45)', zIndex: 99,
-        }} />
-      )}
+    {isMobile && sidebarOpen && (
+      <div onClick={() => setSidebarOpen(false)} style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.45)', zIndex: 99,
+      }} />
+    )}
 
+    <div style={isMobile ? { width: 0, overflow: 'visible' } : { display: 'contents' }}>
       <Sidebar
         tripInfo={tripInfo}
         currentSessionId={sessionId}
@@ -89,14 +89,15 @@ export default function App() {
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
-
-      <ChatWindow
-        messages={messages}
-        loading={loading}
-        onSend={sendMessage}
-        isMobile={isMobile}
-        onMenuOpen={() => setSidebarOpen(true)}
-      />
     </div>
-  )
+
+    <ChatWindow
+      messages={messages}
+      loading={loading}
+      onSend={sendMessage}
+      isMobile={isMobile}
+      onMenuOpen={() => setSidebarOpen(true)}
+    />
+  </div>
+)
 }
