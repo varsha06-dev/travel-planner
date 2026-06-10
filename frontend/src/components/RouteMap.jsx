@@ -3,67 +3,30 @@ import mapboxgl from 'mapbox-gl'
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
 
-const STOP_COLORS = {
-  hotel:      '#C9A96E',
-  restaurant: '#E07B54',
-  museum:     '#6B8CBA',
-  attraction: '#6B8CBA',
-  viewpoint:  '#5BA58C',
-  beach:      '#5BA58C',
-  market:     '#9B8EC4',
-  other:      '#888888',
-}
-
-const STOP_ICONS = {
-  hotel:      '🏨',
-  restaurant: '🍽️',
-  museum:     '🏛️',
-  attraction: '📍',
-  viewpoint:  '🔭',
-  beach:      '🏖️',
-  market:     '🛍️',
-  other:      '📍',
-}
+const STOP_COLORS = { hotel:'#C9A96E', restaurant:'#E07B54', museum:'#6B8CBA', attraction:'#6B8CBA', viewpoint:'#5BA58C', beach:'#5BA58C', market:'#9B8EC4', other:'#888888' }
+const STOP_ICONS  = { hotel:'🏨', restaurant:'🍽️', museum:'🏛️', attraction:'📍', viewpoint:'🔭', beach:'🏖️', market:'🛍️', other:'📍' }
 
 function createMarkerEl(index, type) {
-  const color = STOP_COLORS[type] || STOP_COLORS.other
-  const el    = document.createElement('div')
-  el.style.cssText = `
-    width:28px;height:28px;border-radius:50%;
-    background:${color};color:white;
-    display:flex;align-items:center;justify-content:center;
-    font-size:12px;font-weight:600;font-family:'DM Sans',sans-serif;
-    border:2.5px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.3);
-    cursor:pointer;z-index:10;
-  `
+  const el = document.createElement('div')
+  el.style.cssText = `width:28px;height:28px;border-radius:50%;background:${STOP_COLORS[type]||'#888'};color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;font-family:'DM Sans',sans-serif;border:2.5px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.3);cursor:pointer;`
   el.textContent = index + 1
   return el
 }
 
-export default function RouteMap({ routeData }) {
+export default function RouteMap({ routeData, isMobile }) {
   const [activeDay, setActiveDay] = useState(0)
-  const mapContainerRef           = useRef(null)
-  const mapRef                    = useRef(null)
-  const markersRef                = useRef([])
-
+  const mapContainerRef = useRef(null)
+  const mapRef          = useRef(null)
+  const markersRef      = useRef([])
   const dayData = routeData?.days?.[activeDay]
 
   useEffect(() => {
     if (!mapContainerRef.current || !dayData?.stops?.length || !MAPBOX_TOKEN) return
-
-    markersRef.current.forEach(m => m.remove())
-    markersRef.current = []
+    markersRef.current.forEach(m => m.remove()); markersRef.current = []
     if (mapRef.current) { mapRef.current.remove(); mapRef.current = null }
 
     mapboxgl.accessToken = MAPBOX_TOKEN
-
-    const map = new mapboxgl.Map({
-      container: mapContainerRef.current,
-      style:     'mapbox://styles/mapbox/streets-v12',
-      center:    [dayData.stops[0].lng, dayData.stops[0].lat],
-      zoom:      13,
-    })
-
+    const map = new mapboxgl.Map({ container: mapContainerRef.current, style: 'mapbox://styles/mapbox/streets-v12', center: [dayData.stops[0].lng, dayData.stops[0].lat], zoom: 13 })
     map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-right')
 
     map.on('load', () => {
@@ -71,140 +34,76 @@ export default function RouteMap({ routeData }) {
         map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: dayData.route_geometry } })
         map.addLayer({ id: 'route-casing', type: 'line', source: 'route', paint: { 'line-color': '#fff', 'line-width': 7, 'line-opacity': 0.8 } })
         map.addLayer({ id: 'route-line',   type: 'line', source: 'route', paint: { 'line-color': '#C9A96E', 'line-width': 4 } })
-        map.addLayer({ id: 'route-dash',   type: 'line', source: 'route', paint: { 'line-color': '#fff', 'line-width': 1.5, 'line-dasharray': [3, 5], 'line-opacity': 0.6 } })
       }
-
       dayData.stops.forEach((stop, i) => {
-        const el = createMarkerEl(i, stop.type)
-        const popupHTML = `
-          <div style="font-family:'DM Sans',sans-serif;padding:4px 6px;min-width:140px">
-            <p style="font-size:0.88rem;font-weight:600;color:#1C1917;margin:0 0 3px">${stop.name}</p>
-            <p style="font-size:0.73rem;color:#78716C;margin:0;text-transform:capitalize">${STOP_ICONS[stop.type] || '📍'} ${stop.type}</p>
-            ${stop.duration_to_next_min ? `<p style="font-size:0.72rem;color:#C9A96E;margin:6px 0 0;border-top:1px solid #E8E6E1;padding-top:5px">→ ${stop.duration_to_next_min} min drive${stop.distance_to_next_km > 0 ? ` · ${stop.distance_to_next_km} km` : ''}</p>` : ''}
-          </div>`
-        const marker = new mapboxgl.Marker({ element: el })
+        const popupHTML = `<div style="font-family:'DM Sans',sans-serif;padding:4px 6px;min-width:140px"><p style="font-size:0.88rem;font-weight:600;color:#1C1917;margin:0 0 3px">${stop.name}</p><p style="font-size:0.73rem;color:#78716C;margin:0;text-transform:capitalize">${STOP_ICONS[stop.type]||'📍'} ${stop.type}</p>${stop.duration_to_next_min?`<p style="font-size:0.72rem;color:#C9A96E;margin:6px 0 0;border-top:1px solid #E8E6E1;padding-top:5px">→ ${stop.duration_to_next_min} min drive${stop.distance_to_next_km>0?` · ${stop.distance_to_next_km} km`:''}</p>`:''}</div>`
+        const marker = new mapboxgl.Marker({ element: createMarkerEl(i, stop.type) })
           .setLngLat([stop.lng, stop.lat])
-          .setPopup(new mapboxgl.Popup({ offset: 18, closeButton: false, maxWidth: '220px' }).setHTML(popupHTML))
+          .setPopup(new mapboxgl.Popup({ offset: 18, closeButton: false }).setHTML(popupHTML))
           .addTo(map)
         markersRef.current.push(marker)
       })
-
       const bounds = new mapboxgl.LngLatBounds()
       dayData.stops.forEach(s => bounds.extend([s.lng, s.lat]))
-      map.fitBounds(bounds, { padding: { top: 60, bottom: 60, left: 60, right: 60 }, maxZoom: 16, duration: 800 })
+      map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 800 })
     })
 
     mapRef.current = map
-    return () => {
-      markersRef.current.forEach(m => m.remove()); markersRef.current = []
-      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null }
-    }
+    return () => { markersRef.current.forEach(m => m.remove()); markersRef.current = []; if (mapRef.current) { mapRef.current.remove(); mapRef.current = null } }
   }, [activeDay, dayData])
 
   if (!routeData?.days?.length) return null
 
+  // On mobile: stack vertically. On desktop: side by side.
+  const contentStyle = isMobile
+    ? { display: 'flex', flexDirection: 'column' }
+    : { display: 'flex', height: 320 }
+
+  const stopListStyle = isMobile
+    ? { overflowY: 'auto', maxHeight: 180, padding: '12px 10px', borderBottom: '1px solid var(--border)' }
+    : { width: 200, flexShrink: 0, overflowY: 'auto', padding: '12px 10px', borderRight: '1px solid var(--border)' }
+
+  const mapStyle = isMobile
+    ? { height: 240 }
+    : { flex: 1, minWidth: 0 }
+
   return (
-    <div style={styles.wrapper}>
-      <div style={styles.header}>
-        <span style={styles.headerLabel}>🗺 Day-by-day route</span>
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden', boxShadow: 'var(--shadow-md)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+        <span style={{ fontSize: '0.72rem', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>🗺 Day-by-day route</span>
         {routeData.days.length > 1 && (
-          <div style={styles.dayTabs}>
+          <div style={{ display: 'flex', gap: 4 }}>
             {routeData.days.map((d, i) => (
-              <button key={i}
-                style={{ ...styles.dayTab, ...(i === activeDay ? styles.dayTabActive : {}) }}
-                onClick={() => setActiveDay(i)}
-              >Day {d.day}</button>
+              <button key={i} onClick={() => setActiveDay(i)} style={{ padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 99, cursor: 'pointer', fontFamily: 'var(--font-body)', fontSize: '0.75rem', background: i === activeDay ? 'var(--accent)' : 'transparent', borderColor: i === activeDay ? 'var(--accent)' : 'var(--border)', color: i === activeDay ? '#fff' : 'var(--text-muted)' }}>Day {d.day}</button>
             ))}
           </div>
         )}
       </div>
 
-      {dayData && (
-        <>
-          {dayData.title && <p style={styles.dayTitle}>{dayData.title}</p>}
+      {dayData?.title && <p style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', fontWeight: 400, color: 'var(--text-primary)', padding: '10px 14px 4px' }}>{dayData.title}</p>}
 
-          {/* routemap-content gets flex-direction:column on mobile via CSS */}
-          <div className="routemap-content" style={styles.content}>
-            <div className="routemap-stoplist" style={styles.stopList}>
-              {dayData.stops.map((stop, i) => (
-                <div key={i}>
-                  <div style={styles.stopRow}
-                    onClick={() => {
-                      mapRef.current?.flyTo({ center: [stop.lng, stop.lat], zoom: 16, duration: 600 })
-                      markersRef.current[i]?.togglePopup()
-                    }}
-                  >
-                    <div style={{ ...styles.stopBadge, background: STOP_COLORS[stop.type] || STOP_COLORS.other }}>
-                      {i + 1}
-                    </div>
-                    <div>
-                      <p style={styles.stopName}>{stop.name}</p>
-                      <p style={styles.stopType}>{STOP_ICONS[stop.type] || '📍'} {stop.type}</p>
-                    </div>
-                  </div>
-                  {i < dayData.stops.length - 1 && (
-                    <div style={styles.connector}>
-                      <div style={styles.connectorLine} />
-                      {stop.duration_to_next_min && (
-                        <div style={styles.connectorLabel}>
-                          🚗 {stop.duration_to_next_min} min{stop.distance_to_next_km > 0 ? ` · ${stop.distance_to_next_km} km` : ''}
-                        </div>
-                      )}
-                    </div>
-                  )}
+      <div style={contentStyle}>
+        <div style={stopListStyle}>
+          {dayData?.stops.map((stop, i) => (
+            <div key={i}>
+              <div onClick={() => { mapRef.current?.flyTo({ center: [stop.lng, stop.lat], zoom: 16, duration: 600 }); markersRef.current[i]?.togglePopup() }} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', borderRadius: 8, padding: '4px 6px' }}>
+                <div style={{ width: 22, height: 22, borderRadius: '50%', background: STOP_COLORS[stop.type]||'#888', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 600, flexShrink: 0, marginTop: 1 }}>{i+1}</div>
+                <div>
+                  <p style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1.3, marginBottom: 2 }}>{stop.name}</p>
+                  <p style={{ fontSize: '0.68rem', color: 'var(--text-faint)', textTransform: 'capitalize' }}>{STOP_ICONS[stop.type]||'📍'} {stop.type}</p>
                 </div>
-              ))}
+              </div>
+              {i < dayData.stops.length - 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 6px 2px 17px', margin: '2px 0' }}>
+                  <div style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }} />
+                  {stop.duration_to_next_min && <div style={{ fontSize: '0.65rem', color: 'var(--accent-dark)', whiteSpace: 'nowrap' }}>🚗 {stop.duration_to_next_min} min{stop.distance_to_next_km>0?` · ${stop.distance_to_next_km} km`:''}</div>}
+                </div>
+              )}
             </div>
-
-            <div ref={mapContainerRef} className="routemap-map" style={styles.map} />
-          </div>
-        </>
-      )}
+          ))}
+        </div>
+        <div ref={mapContainerRef} style={mapStyle} />
+      </div>
     </div>
   )
-}
-
-const styles = {
-  wrapper: {
-    background: 'var(--surface)', border: '1px solid var(--border)',
-    borderRadius: 'var(--radius)', overflow: 'hidden',
-    boxShadow: 'var(--shadow-md)', animation: 'fadeSlideIn 0.35s ease',
-  },
-  header: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '10px 14px', borderBottom: '1px solid var(--border)',
-    background: 'var(--surface-2)',
-  },
-  headerLabel: { fontSize: '0.72rem', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-faint)' },
-  dayTabs:    { display: 'flex', gap: 4 },
-  dayTab: {
-    padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 99,
-    background: 'transparent', color: 'var(--text-muted)', fontSize: '0.75rem',
-    fontFamily: 'var(--font-body)', cursor: 'pointer',
-  },
-  dayTabActive: { background: 'var(--accent)', borderColor: 'var(--accent)', color: '#fff' },
-  dayTitle: {
-    fontFamily: 'var(--font-display)', fontSize: '1rem', fontWeight: 400,
-    color: 'var(--text-primary)', padding: '10px 14px 4px', letterSpacing: '0.02em',
-  },
-  content: { display: 'flex', height: 320 },
-  stopList: {
-    width: 200, flexShrink: 0, overflowY: 'auto',
-    padding: '12px 10px', borderRight: '1px solid var(--border)',
-  },
-  stopRow: {
-    display: 'flex', alignItems: 'flex-start', gap: 8,
-    cursor: 'pointer', borderRadius: 8, padding: '4px 6px',
-  },
-  stopBadge: {
-    width: 22, height: 22, borderRadius: '50%', color: '#fff',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: '0.7rem', fontWeight: 600, flexShrink: 0, marginTop: 1,
-  },
-  stopName:  { fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-primary)', lineHeight: 1.3, marginBottom: 2 },
-  stopType:  { fontSize: '0.68rem', color: 'var(--text-faint)', textTransform: 'capitalize' },
-  connector: { display: 'flex', alignItems: 'center', gap: 6, padding: '2px 6px 2px 17px', margin: '2px 0' },
-  connectorLine:  { width: 1, height: 16, background: 'var(--border)', flexShrink: 0 },
-  connectorLabel: { fontSize: '0.65rem', color: 'var(--accent-dark)', whiteSpace: 'nowrap' },
-  map: { flex: 1, minWidth: 0 },
 }

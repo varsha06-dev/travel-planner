@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import Sidebar from './components/Sidebar.jsx'
 import ChatWindow from './components/ChatWindow.jsx'
+import { useIsMobile } from './hooks/useIsMobile.js'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
@@ -11,19 +12,16 @@ const WELCOME = {
 }
 
 function sessionToMessages(rawMessages) {
-  return [
-    WELCOME,
-    ...rawMessages.map((m, i) => ({
-      id: `loaded-${i}`,
-      role: m.role === 'human' ? 'user' : 'assistant',
-      content: m.content, ts: i,
-      places: m.places || null,
-      route_data: m.route_data || null,
-    }))
-  ]
+  return [WELCOME, ...rawMessages.map((m, i) => ({
+    id: `loaded-${i}`,
+    role: m.role === 'human' ? 'user' : 'assistant',
+    content: m.content, ts: i,
+    places: m.places || null, route_data: m.route_data || null,
+  }))]
 }
 
 export default function App() {
+  const isMobile = useIsMobile()
   const [messages, setMessages]       = useState([WELCOME])
   const [sessionId, setSessionId]     = useState(null)
   const [loading, setLoading]         = useState(false)
@@ -33,10 +31,7 @@ export default function App() {
   const sendMessage = useCallback(async (text) => {
     if (!text.trim() || loading) return
     setSidebarOpen(false)
-    setMessages(prev => [...prev, {
-      id: Date.now(), role: 'user', content: text,
-      ts: Date.now(), places: null, route_data: null,
-    }])
+    setMessages(prev => [...prev, { id: Date.now(), role: 'user', content: text, ts: Date.now(), places: null, route_data: null }])
     setLoading(true)
     try {
       const res = await fetch(`${API_BASE}/chat`, {
@@ -48,19 +43,10 @@ export default function App() {
       const data = await res.json()
       if (!sessionId) setSessionId(data.session_id)
       if (data.trip_info && Object.keys(data.trip_info).length > 0) setTripInfo(data.trip_info)
-      setMessages(prev => [...prev, {
-        id: Date.now() + 1, role: 'assistant', content: data.reply,
-        ts: Date.now(), places: data.places || null, route_data: data.route_data || null,
-      }])
+      setMessages(prev => [...prev, { id: Date.now() + 1, role: 'assistant', content: data.reply, ts: Date.now(), places: data.places || null, route_data: data.route_data || null }])
     } catch (err) {
-      setMessages(prev => [...prev, {
-        id: Date.now() + 1, role: 'error',
-        content: `Something went wrong: ${err.message}`,
-        ts: Date.now(), places: null, route_data: null,
-      }])
-    } finally {
-      setLoading(false)
-    }
+      setMessages(prev => [...prev, { id: Date.now() + 1, role: 'error', content: `Something went wrong: ${err.message}`, ts: Date.now(), places: null, route_data: null }])
+    } finally { setLoading(false) }
   }, [sessionId, loading])
 
   const startOver = useCallback(() => {
@@ -72,10 +58,8 @@ export default function App() {
       const res = await fetch(`${API_BASE}/sessions/${id}`)
       if (!res.ok) throw new Error('Failed to load session')
       const data = await res.json()
-      setSessionId(data.session_id)
-      setTripInfo(data.trip_info || {})
-      setMessages(sessionToMessages(data.messages))
-      setSidebarOpen(false)
+      setSessionId(data.session_id); setTripInfo(data.trip_info || {})
+      setMessages(sessionToMessages(data.messages)); setSidebarOpen(false)
     } catch (err) { alert(`Could not load trip: ${err.message}`) }
   }, [])
 
@@ -85,10 +69,14 @@ export default function App() {
   }, [sessionId, startOver])
 
   return (
-    <div className="app-shell">
-      {/* Mobile overlay */}
-      {sidebarOpen && (
-        <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)', position: 'relative' }}>
+
+      {/* Dark overlay on mobile when sidebar open */}
+      {isMobile && sidebarOpen && (
+        <div onClick={() => setSidebarOpen(false)} style={{
+          position: 'fixed', inset: 0,
+          background: 'rgba(0,0,0,0.45)', zIndex: 99,
+        }} />
       )}
 
       <Sidebar
@@ -97,6 +85,7 @@ export default function App() {
         onStartOver={startOver}
         onLoadSession={loadSession}
         onDeleteSession={deleteSession}
+        isMobile={isMobile}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
@@ -105,6 +94,7 @@ export default function App() {
         messages={messages}
         loading={loading}
         onSend={sendMessage}
+        isMobile={isMobile}
         onMenuOpen={() => setSidebarOpen(true)}
       />
     </div>
