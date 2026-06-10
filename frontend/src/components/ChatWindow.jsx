@@ -22,7 +22,7 @@ export default function ChatWindow({ messages, loading, onSend, isMobile, onMenu
 
   return (
     // overflow removed — only the message list div scrolls
-    <main style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg)', minWidth: 0 }}>
+    <main style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100dvh', background: 'var(--bg)', minWidth: 0 }}>
 
       {/* Mobile header — flex sibling of message list so it never scrolls away */}
       {isMobile && (

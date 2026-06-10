@@ -69,7 +69,7 @@ export default function App() {
   }, [sessionId, startOver])
 
   return (
-  <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)', position: 'relative' }}>
+  <div style={{ display: 'flex', height: '100dvh', overflow: 'hidden', background: 'var(--bg)', position: 'relative' }}>
 
     {isMobile && sidebarOpen && (
       <div onClick={() => setSidebarOpen(false)} style={{
