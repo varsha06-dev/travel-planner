@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react'
 import Sidebar from './components/Sidebar.jsx'
 import ChatWindow from './components/ChatWindow.jsx'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
 const WELCOME = {
   id: 'welcome', role: 'assistant',
@@ -14,30 +14,30 @@ function sessionToMessages(rawMessages) {
   return [
     WELCOME,
     ...rawMessages.map((m, i) => ({
-      id:         `loaded-${i}`,
-      role:       m.role === 'human' ? 'user' : 'assistant',
-      content:    m.content,
-      ts:         i,
-      places:     m.places     || null,   // ← restored from DB
-      route_data: m.route_data || null,   // ← restored from DB
+      id: `loaded-${i}`,
+      role: m.role === 'human' ? 'user' : 'assistant',
+      content: m.content, ts: i,
+      places: m.places || null,
+      route_data: m.route_data || null,
     }))
   ]
 }
 
 export default function App() {
-  const [messages, setMessages]   = useState([WELCOME])
-  const [sessionId, setSessionId] = useState(null)
-  const [loading, setLoading]     = useState(false)
-  const [tripInfo, setTripInfo]   = useState({})
+  const [messages, setMessages]       = useState([WELCOME])
+  const [sessionId, setSessionId]     = useState(null)
+  const [loading, setLoading]         = useState(false)
+  const [tripInfo, setTripInfo]       = useState({})
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const sendMessage = useCallback(async (text) => {
     if (!text.trim() || loading) return
+    setSidebarOpen(false)
     setMessages(prev => [...prev, {
       id: Date.now(), role: 'user', content: text,
       ts: Date.now(), places: null, route_data: null,
     }])
     setLoading(true)
-
     try {
       const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
@@ -45,24 +45,17 @@ export default function App() {
         body: JSON.stringify({ message: text, session_id: sessionId }),
       })
       if (!res.ok) throw new Error(`Server error: ${res.status}`)
-
       const data = await res.json()
       if (!sessionId) setSessionId(data.session_id)
-      if (data.trip_info && Object.keys(data.trip_info).length > 0)
-        setTripInfo(data.trip_info)
-
+      if (data.trip_info && Object.keys(data.trip_info).length > 0) setTripInfo(data.trip_info)
       setMessages(prev => [...prev, {
-        id:         Date.now() + 1,
-        role:       'assistant',
-        content:    data.reply,
-        ts:         Date.now(),
-        places:     data.places     || null,
-        route_data: data.route_data || null,
+        id: Date.now() + 1, role: 'assistant', content: data.reply,
+        ts: Date.now(), places: data.places || null, route_data: data.route_data || null,
       }])
     } catch (err) {
       setMessages(prev => [...prev, {
         id: Date.now() + 1, role: 'error',
-        content: `Something went wrong: ${err.message}. Make sure the backend is running on port 8000.`,
+        content: `Something went wrong: ${err.message}`,
         ts: Date.now(), places: null, route_data: null,
       }])
     } finally {
@@ -71,7 +64,7 @@ export default function App() {
   }, [sessionId, loading])
 
   const startOver = useCallback(() => {
-    setMessages([WELCOME]); setSessionId(null); setTripInfo({})
+    setMessages([WELCOME]); setSessionId(null); setTripInfo({}); setSidebarOpen(false)
   }, [])
 
   const loadSession = useCallback(async (id) => {
@@ -81,10 +74,9 @@ export default function App() {
       const data = await res.json()
       setSessionId(data.session_id)
       setTripInfo(data.trip_info || {})
-      setMessages(sessionToMessages(data.messages))  // ← maps + gallery restored here
-    } catch (err) {
-      alert(`Could not load trip: ${err.message}`)
-    }
+      setMessages(sessionToMessages(data.messages))
+      setSidebarOpen(false)
+    } catch (err) { alert(`Could not load trip: ${err.message}`) }
   }, [])
 
   const deleteSession = useCallback(async (id) => {
@@ -93,15 +85,28 @@ export default function App() {
   }, [sessionId, startOver])
 
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)' }}>
+    <div className="app-shell">
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+      )}
+
       <Sidebar
         tripInfo={tripInfo}
         currentSessionId={sessionId}
         onStartOver={startOver}
         onLoadSession={loadSession}
         onDeleteSession={deleteSession}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
-      <ChatWindow messages={messages} loading={loading} onSend={sendMessage} />
+
+      <ChatWindow
+        messages={messages}
+        loading={loading}
+        onSend={sendMessage}
+        onMenuOpen={() => setSidebarOpen(true)}
+      />
     </div>
   )
 }

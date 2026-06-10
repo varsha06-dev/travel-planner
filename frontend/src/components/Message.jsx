@@ -9,8 +9,8 @@ export default function Message({ message }) {
 
   if (isUser) {
     return (
-      <div style={styles.userRow}>
-        <div style={styles.userBubble}>
+      <div className="msg-user-row" style={styles.userRow}>
+        <div className="msg-user-bubble" style={styles.userBubble}>
           <p style={styles.userText}>{message.content}</p>
         </div>
       </div>
@@ -19,7 +19,7 @@ export default function Message({ message }) {
 
   if (isError) {
     return (
-      <div style={styles.botRow}>
+      <div className="msg-bot-row" style={styles.botRow}>
         <div style={styles.avatarCol}><div style={styles.avatar}>✦</div></div>
         <div style={{ ...styles.botBubble, ...styles.errorBubble }}>
           <p style={styles.errorText}>⚠ {message.content}</p>
@@ -29,12 +29,11 @@ export default function Message({ message }) {
   }
 
   return (
-    <div style={styles.botRow}>
+    <div className="msg-bot-row" style={styles.botRow}>
       <div style={styles.avatarCol}>
         <div style={styles.avatar}>✦</div>
       </div>
-      <div style={styles.botBubbleCol}>
-        {/* Text response */}
+      <div className="msg-bot-col" style={styles.botBubbleCol}>
         <div style={styles.botBubble}>
           <div className="prose">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -43,12 +42,10 @@ export default function Message({ message }) {
           </div>
         </div>
 
-        {/* Route map — shown when a day-by-day plan was generated */}
         {message.route_data?.days?.length > 0 && (
           <RouteMap routeData={message.route_data} />
         )}
 
-        {/* Places gallery — shown when named places are mentioned */}
         {!message.route_data && message.places?.length > 0 && (
           <PlacesGallery places={message.places} />
         )}
@@ -56,8 +53,6 @@ export default function Message({ message }) {
     </div>
   )
 }
-
-// ── Places Gallery ────────────────────────────────────────────────────────────
 
 function PlacesGallery({ places }) {
   const [active, setActive] = useState(0)
@@ -75,9 +70,7 @@ function PlacesGallery({ places }) {
         <a
           href={`${place.image.credit_url}?utm_source=voyage_travel_planner&utm_medium=referral`}
           target="_blank" rel="noopener noreferrer" style={styles.creditBadge}
-        >
-          📷 {place.image.credit}
-        </a>
+        >📷 {place.image.credit}</a>
       </div>
       {places.length > 1 && (
         <div style={styles.thumbStrip}>
@@ -101,8 +94,6 @@ function PlacesGallery({ places }) {
     </div>
   )
 }
-
-// ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = {
   userRow: {
@@ -134,8 +125,6 @@ const styles = {
   },
   errorBubble: { background: '#FFF5F5', border: '1px solid #FED7D7', borderRadius: '4px 16px 16px 16px' },
   errorText: { fontSize: '0.85rem', color: '#C53030', lineHeight: 1.6 },
-
-  // Gallery
   gallery: {
     background: 'var(--surface)', border: '1px solid var(--border)',
     borderRadius: 'var(--radius)', overflow: 'hidden',
@@ -147,7 +136,7 @@ const styles = {
     borderBottom: '1px solid var(--border)',
   },
   mainImageWrap: { position: 'relative' },
-  mainImage: { width: '100%', height: 220, objectFit: 'cover', display: 'block' },
+  mainImage: { width: '100%', height: 200, objectFit: 'cover', display: 'block' },
   nameOverlay: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     background: 'linear-gradient(to top, rgba(0,0,0,0.72) 0%, transparent 100%)',
@@ -156,13 +145,12 @@ const styles = {
   overlayName: {
     color: '#fff', fontSize: '1rem', fontFamily: 'var(--font-display)',
     fontWeight: 400, letterSpacing: '0.02em', marginBottom: 2,
-    textShadow: '0 1px 4px rgba(0,0,0,0.4)',
   },
   overlayDesc: { color: 'rgba(255,255,255,0.78)', fontSize: '0.75rem', lineHeight: 1.4 },
   creditBadge: {
     position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.45)',
     color: '#fff', fontSize: '0.65rem', padding: '3px 8px',
-    borderRadius: 99, textDecoration: 'none', backdropFilter: 'blur(4px)',
+    borderRadius: 99, textDecoration: 'none',
   },
   thumbStrip: {
     display: 'flex', overflowX: 'auto', gap: 0, padding: '8px',
@@ -172,7 +160,7 @@ const styles = {
     display: 'flex', flexDirection: 'column', alignItems: 'center',
     gap: 4, border: 'none', background: 'transparent',
     cursor: 'pointer', padding: '4px 6px', borderRadius: 'var(--radius-sm)',
-    transition: 'background 0.15s ease', flexShrink: 0, minWidth: 72,
+    flexShrink: 0, minWidth: 72,
   },
   thumbCardActive: { background: 'var(--accent-soft)' },
   thumbImgWrap: { position: 'relative', width: 60, height: 44, borderRadius: 6, overflow: 'hidden' },
