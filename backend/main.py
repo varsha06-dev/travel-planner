@@ -17,21 +17,18 @@ from langchain_core.tools import tool
 load_dotenv()
 
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
-DATABASE_URL = os.getenv("DATABASE_URL")   # Set this in Render env vars
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ── App Setup ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Travel Planner API")
 
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    os.getenv("ALLOWED_ORIGIN", ""),
-]
-
+# Allow all origins — safe for a personal project since the API
+# requires private keys to do anything useful
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o for o in ALLOWED_ORIGINS if o],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -39,13 +36,7 @@ app.add_middleware(
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def get_db():
-    """Open a Supabase/Postgres connection using pg8000 (pure Python, no binary needed).
-    Manually parses the DATABASE_URL to handle Supabase pooler usernames like postgres.xxxx
-    which Python's urlparse misreads.
-    """
-    import re, ssl
-    # Match: postgresql://user:password@host:port/dbname
-    # user may contain dots (e.g. postgres.abcdef) — use a greedy split on last @ 
+    import ssl
     url = DATABASE_URL.replace("postgresql://", "").replace("postgres://", "")
     credentials, rest = url.rsplit("@", 1)
     user, password = credentials.split(":", 1)
@@ -60,17 +51,12 @@ def get_db():
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     return pg8000.dbapi.connect(
-        host=host,
-        port=port,
-        database=dbname,
-        user=user,
-        password=password,
-        ssl_context=ctx,
-        timeout=10,
+        host=host, port=port, database=dbname,
+        user=user, password=password,
+        ssl_context=ctx, timeout=10,
     )
 
 def init_db():
-    """Create the sessions table if it doesn't exist yet."""
     conn = get_db()
     cur = conn.cursor()
     try:
@@ -140,9 +126,8 @@ def save_session(sid: str, messages: list, trip_info: dict, visual_map: dict = N
     now  = datetime.utcnow().isoformat()
     data = serialize_messages(messages, visual_map or {})
     conn = get_db()
-    cur = conn.cursor()
+    cur  = conn.cursor()
     try:
-        # Upsert — insert if new, update if exists
         cur.execute("""
             INSERT INTO sessions (id, created_at, updated_at, trip_info, messages)
             VALUES (%s, %s, %s, %s, %s)
@@ -158,7 +143,7 @@ def save_session(sid: str, messages: list, trip_info: dict, visual_map: dict = N
 
 def delete_session(sid: str):
     conn = get_db()
-    cur = conn.cursor()
+    cur  = conn.cursor()
     try:
         cur.execute("DELETE FROM sessions WHERE id = %s", (sid,))
     finally:
@@ -169,22 +154,16 @@ def delete_session(sid: str):
 def list_sessions() -> list:
     conn = get_db()
     conn.row_factory = pg8000.dbapi.DictRowFactory
-    cur = conn.cursor()
+    cur  = conn.cursor()
     try:
-        cur.execute(
-            "SELECT id, created_at, updated_at, trip_info FROM sessions ORDER BY updated_at DESC"
-        )
+        cur.execute("SELECT id, created_at, updated_at, trip_info FROM sessions ORDER BY updated_at DESC")
         rows = cur.fetchall()
     finally:
         cur.close()
     conn.close()
-    return [
-        {"id":         r["id"],
-         "created_at": r["created_at"],
-         "updated_at": r["updated_at"],
-         "trip_info":  json.loads(r["trip_info"] or "{}")}
-        for r in rows
-    ]
+    return [{"id": r["id"], "created_at": r["created_at"],
+             "updated_at": r["updated_at"],
+             "trip_info": json.loads(r["trip_info"] or "{}")} for r in rows]
 
 # ── Unsplash ──────────────────────────────────────────────────────────────────
 
@@ -221,57 +200,37 @@ def fetch_place_images(places: list) -> list:
 
 # ── Mapbox ────────────────────────────────────────────────────────────────────
 
-def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """Straight-line distance in km between two lat/lng points."""
+def haversine_km(lat1, lng1, lat2, lng2):
     R = 6371
     dlat = math.radians(lat2 - lat1)
     dlng = math.radians(lng2 - lng1)
-    a = (math.sin(dlat / 2) ** 2
-         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
-         * math.sin(dlng / 2) ** 2)
+    a = (math.sin(dlat/2)**2 + math.cos(math.radians(lat1))
+         * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2)
     return R * 2 * math.asin(math.sqrt(a))
 
-
-def bbox_from_center(lat: float, lng: float, radius_km: float = 80) -> list:
-    """Return [west, south, east, north] bounding box around a point."""
+def bbox_from_center(lat, lng, radius_km=80):
     dlat = radius_km / 111.0
     dlng = radius_km / (111.0 * math.cos(math.radians(lat)))
     return [lng - dlng, lat - dlat, lng + dlng, lat + dlat]
 
-
 def get_destination_center(destination: str) -> Optional[dict]:
-    """
-    Geocode the destination at region/place level to get its center and
-    compute a bounding box. Used to constrain all stop lookups to the
-    same island or city area — prevents "Maui" stops resolving to Molokai.
-    """
     if not MAPBOX_TOKEN: return None
-    query  = urllib.parse.quote(destination)
-    url    = (f"https://api.mapbox.com/geocoding/v5/mapbox.places/{query}.json"
-              f"?access_token={MAPBOX_TOKEN}&limit=1&types=place,region,locality")
+    query = urllib.parse.quote(destination)
+    url   = (f"https://api.mapbox.com/geocoding/v5/mapbox.places/{query}.json"
+             f"?access_token={MAPBOX_TOKEN}&limit=1&types=place,region,locality")
     try:
         with urllib.request.urlopen(url, timeout=6) as r:
             data = json.loads(r.read().decode())
         feats = data.get("features", [])
         if not feats: return None
-        feat      = feats[0]
-        lng, lat  = feat["center"]
-        # Use Mapbox's own bbox if available, else build one from the center
-        mapbox_bb = feat.get("bbox")
-        bbox      = mapbox_bb if mapbox_bb else bbox_from_center(lat, lng, radius_km=80)
+        feat     = feats[0]
+        lng, lat = feat["center"]
+        bbox     = feat.get("bbox") or bbox_from_center(lat, lng)
         return {"lng": round(lng, 6), "lat": round(lat, 6), "bbox": bbox}
     except: return None
 
-
 def geocode(place_name: str, context: str = "",
-            proximity: dict = None,
-            bbox: list = None) -> Optional[dict]:
-    """
-    Geocode a place name with optional proximity bias and bounding box.
-    bbox   = [west, south, east, north] — hard-constrains results to this area,
-             preventing cross-island or cross-country mismatches.
-    proximity = {lng, lat} — soft bias toward this point within the bbox.
-    """
+            proximity: dict = None, bbox: list = None) -> Optional[dict]:
     if not MAPBOX_TOKEN: return None
     query  = urllib.parse.quote(f"{place_name} {context}".strip())
     params = f"access_token={MAPBOX_TOKEN}&limit=1&types=poi,address,place"
@@ -288,7 +247,6 @@ def geocode(place_name: str, context: str = "",
         lng, lat = feats[0]["center"]
         return {"lng": round(lng, 6), "lat": round(lat, 6)}
     except: return None
-
 
 def get_directions(coords: list, mode: str = "driving") -> Optional[dict]:
     if not MAPBOX_TOKEN or len(coords) < 2: return None
@@ -309,24 +267,15 @@ def get_directions(coords: list, mode: str = "driving") -> Optional[dict]:
         }
     except: return None
 
-
 def build_day_map(day_data: dict, destination_context: str) -> Optional[dict]:
     stops = day_data.get("stops", [])
     if len(stops) < 2: return None
-
-    # Step 1: get the destination's center + bounding box.
-    # The bbox is passed to every stop geocode call so results are
-    # constrained to the same island/region — no more cross-island routes.
     dest_info = get_destination_center(destination_context) if destination_context else None
     dest_bbox = dest_info["bbox"] if dest_info else None
-    dest_prox = dest_info           # {lng, lat, bbox} — used as proximity too
+    dest_prox = dest_info
 
     def geocode_stop(stop):
-        coords = geocode(
-            stop["name"], destination_context,
-            proximity=dest_prox,
-            bbox=dest_bbox,
-        )
+        coords = geocode(stop["name"], destination_context, proximity=dest_prox, bbox=dest_bbox)
         return {**stop, **(coords or {})}
 
     geocoded = []
@@ -337,21 +286,16 @@ def build_day_map(day_data: dict, destination_context: str) -> Optional[dict]:
     order = {s["name"]: i for i, s in enumerate(stops)}
     geocoded.sort(key=lambda s: order.get(s["name"], 99))
 
-    # Step 2: filter out stops that failed geocoding or landed impossibly
-    # far from the destination center (catches offshore/ocean results).
     MAX_DIST_KM = 120
     valid = []
     for s in geocoded:
-        if "lng" not in s or "lat" not in s:
-            continue
+        if "lng" not in s or "lat" not in s: continue
         if dest_info:
-            dist = haversine_km(dest_info["lat"], dest_info["lng"], s["lat"], s["lng"])
-            if dist > MAX_DIST_KM:
-                continue   # discard — wrong island or country
+            if haversine_km(dest_info["lat"], dest_info["lng"], s["lat"], s["lng"]) > MAX_DIST_KM:
+                continue
         valid.append(s)
 
     if len(valid) < 2: return None
-
     directions = get_directions(valid)
     if directions:
         for i, leg in enumerate(directions["legs"]):
@@ -359,12 +303,8 @@ def build_day_map(day_data: dict, destination_context: str) -> Optional[dict]:
                 valid[i]["duration_to_next_min"] = leg["duration_min"]
                 valid[i]["distance_to_next_km"]  = leg["distance_km"]
 
-    return {
-        "day":            day_data["day"],
-        "title":          day_data.get("title", f"Day {day_data['day']}"),
-        "stops":          valid,
-        "route_geometry": directions["geometry"] if directions else None,
-    }
+    return {"day": day_data["day"], "title": day_data.get("title", f"Day {day_data['day']}"),
+            "stops": valid, "route_geometry": directions["geometry"] if directions else None}
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
@@ -536,7 +476,7 @@ async def get_sessions(): return list_sessions()
 async def get_session(sid: str):
     conn = get_db()
     conn.row_factory = pg8000.dbapi.DictRowFactory
-    cur = conn.cursor()
+    cur  = conn.cursor()
     try:
         cur.execute("SELECT * FROM sessions WHERE id = %s", (sid,))
         row = cur.fetchone()
