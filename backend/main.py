@@ -14,6 +14,9 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.tools import tool
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
 load_dotenv()
 
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
@@ -32,6 +35,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+class ForceCorsMIddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
+app.add_middleware(ForceCorsMIddleware)
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
