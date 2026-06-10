@@ -123,7 +123,7 @@ def deserialize_messages(raw: str):
 
 def load_session(sid: str):
     conn = get_db()
-    conn.row_factory = pg8000.dbapi.DictRowFactory
+    conn.row_factory = pg8000.dbapi.DictRow
     cur = conn.cursor()
     try:
         cur.execute("SELECT messages FROM sessions WHERE id = %s", (sid,))
@@ -165,7 +165,7 @@ def delete_session(sid: str):
 
 def list_sessions() -> list:
     conn = get_db()
-    conn.row_factory = pg8000.dbapi.DictRowFactory
+    conn.row_factory = pg8000.dbapi.DictRow
     cur  = conn.cursor()
     try:
         cur.execute("SELECT id, created_at, updated_at, trip_info FROM sessions ORDER BY updated_at DESC")
@@ -487,7 +487,7 @@ async def get_sessions(): return list_sessions()
 @app.get("/sessions/{sid}", response_model=LoadResponse)
 async def get_session(sid: str):
     conn = get_db()
-    conn.row_factory = pg8000.dbapi.DictRowFactory
+    conn.row_factory = pg8000.dbapi.DictRow
     cur  = conn.cursor()
     try:
         cur.execute("SELECT * FROM sessions WHERE id = %s", (sid,))
