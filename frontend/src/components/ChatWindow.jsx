@@ -66,34 +66,73 @@ export default function ChatWindow({ messages, loading, onSend, isMobile, onMenu
         <div ref={bottomRef} />
       </div>
 
-      {/* Input bar — flex sibling so it stays at bottom */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, margin: `0 ${isMobile ? '10px' : '40px'} 8px`, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '12px 14px', boxShadow: 'var(--shadow-sm)', flexShrink: 0 }}>
-        <textarea
-          ref={inputRef}
-          style={{ flex: 1, border: 'none', background: 'transparent', fontFamily: 'var(--font-body)', fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.6, maxHeight: 140, overflowY: 'auto', resize: 'none', outline: 'none' }}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Tell me about your dream trip…"
-          rows={1}
-          disabled={loading}
-        />
-        <button
-          onClick={handleSend}
-          disabled={!input.trim() || loading}
-          aria-label="Send"
-          style={{ flexShrink: 0, width: 36, height: 36, borderRadius: 10, border: 'none', cursor: !input.trim() || loading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: !input.trim() || loading ? 'var(--border)' : 'var(--user-bubble)', color: !input.trim() || loading ? 'var(--text-faint)' : 'var(--user-text)' }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"/>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-          </svg>
-        </button>
-      </div>
+      {/* Input bar */}
+<div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, margin: `0 ${isMobile ? '10px' : '40px'} 8px`, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '12px 14px', boxShadow: 'var(--shadow-sm)', flexShrink: 0 }}>
+  <textarea
+    ref={inputRef}
+    style={{ flex: 1, border: 'none', background: 'transparent', fontFamily: 'var(--font-body)', fontSize: '0.9rem', color: 'var(--text-primary)', lineHeight: 1.6, maxHeight: 140, overflowY: 'auto', resize: 'none', outline: 'none' }}
+    value={input}
+    onChange={e => setInput(e.target.value)}
+    onKeyDown={handleKeyDown}
+    placeholder="Tell me about your dream trip…"
+    rows={1}
+    disabled={loading}
+  />
+  <MicButton onTranscript={text => setInput(prev => prev + text)} disabled={loading} />
+  <button
+    onClick={handleSend}
+    disabled={!input.trim() || loading}
+    aria-label="Send"
+    style={{ flexShrink: 0, width: 36, height: 36, borderRadius: 10, border: 'none', cursor: !input.trim() || loading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: !input.trim() || loading ? 'var(--border)' : 'var(--user-bubble)', color: !input.trim() || loading ? 'var(--text-faint)' : 'var(--user-text)' }}
+  >
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="22" y1="2" x2="11" y2="13"/>
+      <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+    </svg>
+  </button>
+</div>
 
       {!isMobile && <p style={{ textAlign: 'center', fontSize: '0.7rem', color: 'var(--text-faint)', marginBottom: 12, letterSpacing: '0.02em' }}>Enter to send · Shift+Enter for new line</p>}
 
       <style>{`@keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-5px)} } @keyframes fadeSlideIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }`}</style>
     </main>
   )
+  function MicButton({ onTranscript, disabled }) {
+  const [listening, setListening] = useState(false)
+
+  const toggle = () => {
+    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+      alert('Speech recognition is not supported in this browser.')
+      return
+    }
+    if (listening) { setListening(false); return }
+
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    const rec = new SR()
+    rec.lang = 'en-US'
+    rec.interimResults = false
+    rec.onresult = e => onTranscript(e.results[0][0].transcript + ' ')
+    rec.onend = () => setListening(false)
+    rec.onerror = () => setListening(false)
+    rec.start()
+    setListening(true)
+  }
+
+  return (
+    <button onClick={toggle} disabled={disabled} aria-label="Voice input" style={{
+      flexShrink: 0, width: 36, height: 36, borderRadius: 10, border: 'none',
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: listening ? '#fee2e2' : 'var(--surface-2)',
+      color: listening ? '#dc2626' : 'var(--text-muted)',
+    }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill={listening ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <rect x="9" y="2" width="6" height="11" rx="3"/>
+        <path d="M5 10a7 7 0 0 0 14 0"/>
+        <line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="8" y1="22" x2="16" y2="22"/>
+      </svg>
+    </button>
+  )
+}
 }
