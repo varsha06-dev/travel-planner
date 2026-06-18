@@ -369,34 +369,49 @@ async def chat(req: ChatRequest):
     history, visual_map = load_session(sid)
 
     async def generate():
-        full_reply = ""
-        try:
-            messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=req.message)]
+    full_reply = ""
+    try:
+        messages_list = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=req.message)]
 
-            # Send session id immediately
-            yield f"data: {json.dumps({'type': 'session', 'session_id': sid})}\n\n"
+        yield f"data: {json.dumps({'type': 'session', 'session_id': sid})}\n\n"
 
-            # Run agent (with tool calls)
-            while True:
-                response = model_with_tools.invoke(messages)
-                messages.append(response)
+        while True:
+            gathered = None
 
-                if response.tool_calls:
-                    for tc in response.tool_calls:
-                        fn = TOOLS_BY_NAME.get(tc["name"])
-                        if fn:
-                            # Tell frontend we're searching
-                            yield f"data: {json.dumps({'type': 'tool', 'name': tc['name']})}\n\n"
-                            result = str(fn.invoke(tc["args"]))
-                            messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+            # Stream tokens directly from Claude as they arrive
+            async for chunk in model_with_tools.astream(messages_list):
+                if gathered is None:
+                    gathered = chunk
                 else:
-                    full_reply = response.content
-                    # Stream text word by word
-                    words = full_reply.split(" ")
-                    for i, word in enumerate(words):
-                        chunk = word + (" " if i < len(words) - 1 else "")
-                        yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
-                    break
+                    gathered = gathered + chunk
+
+                # Forward text tokens to frontend immediately
+                if chunk.content:
+                    if isinstance(chunk.content, str) and chunk.content:
+                        full_reply += chunk.content
+                        yield f"data: {json.dumps({'type': 'chunk', 'text': chunk.content})}\n\n"
+                    elif isinstance(chunk.content, list):
+                        for block in chunk.content:
+                            if isinstance(block, dict) and block.get('type') == 'text':
+                                text = block.get('text', '')
+                                if text:
+                                    full_reply += text
+                                    yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+
+            # After stream ends, check for tool calls
+            if gathered and getattr(gathered, 'tool_calls', None):
+                messages_list.append(gathered)
+                full_reply = ""  # reset — more text coming after tools
+                for tc in gathered.tool_calls:
+                    fn = TOOLS_BY_NAME.get(tc["name"])
+                    if fn:
+                        yield f"data: {json.dumps({'type': 'tool', 'name': tc['name']})}\n\n"
+                        result = str(fn.invoke(tc["args"]))
+                        messages_list.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+            else:
+                if gathered:
+                    messages_list.append(gathered)
+                break
 
             # Post-processing (images, maps, trip info)
             trip_info  = extract_trip_info(history, req.message, full_reply)
