@@ -19,7 +19,6 @@ load_dotenv()
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "")
 DATABASE_URL  = os.getenv("DATABASE_URL")
 
-# ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Travel Planner API")
 
 app.add_middleware(
@@ -41,7 +40,6 @@ async def add_cors_header(request: Request, call_next):
     response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
-# ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
     import ssl
     url = DATABASE_URL.replace("postgresql://", "").replace("postgres://", "")
@@ -72,7 +70,6 @@ def init_db():
 
 init_db()
 
-# ── Serialization ─────────────────────────────────────────────────────────────
 def serialize_messages(messages, visual_map=None):
     out = []
     for i, m in enumerate(messages):
@@ -112,7 +109,6 @@ def fetch_one_dict(cur):
     keys = [k[0] for k in cur.description]
     return dict(zip(keys, row))
 
-# ── DB Helpers ────────────────────────────────────────────────────────────────
 def load_session(sid):
     conn = get_db(); cur = conn.cursor()
     try:
@@ -156,7 +152,6 @@ def list_sessions():
     return [{"id": r["id"], "created_at": r["created_at"], "updated_at": r["updated_at"],
              "trip_info": json.loads(r["trip_info"] or "{}")} for r in rows]
 
-# ── Unsplash ──────────────────────────────────────────────────────────────────
 def fetch_one_image(query):
     key = os.getenv("UNSPLASH_ACCESS_KEY")
     if not key: return None
@@ -183,7 +178,6 @@ def fetch_place_images(places):
     results.sort(key=lambda r: order.get(r["name"], 99))
     return results
 
-# ── Mapbox ────────────────────────────────────────────────────────────────────
 def haversine_km(lat1, lng1, lat2, lng2):
     R = 6371; dlat = math.radians(lat2-lat1); dlng = math.radians(lng2-lng1)
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlng/2)**2
@@ -267,7 +261,6 @@ def build_day_map(day_data, destination_context):
     return {"day": day_data["day"], "title": day_data.get("title", f"Day {day_data['day']}"),
             "stops": valid, "route_geometry": directions["geometry"] if directions else None}
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
 search_tool = TavilySearchResults(max_results=5,
     description="Search the web for current travel information, best times to visit, local tips, visa requirements, and destination guides.")
 
@@ -296,7 +289,6 @@ def estimate_hotel_costs(destination: str, budget_level: str = "mid-range") -> s
 ALL_TOOLS     = [search_tool, get_best_time_to_visit, find_activities, estimate_flight_costs, estimate_hotel_costs]
 TOOLS_BY_NAME = {t.name: t for t in ALL_TOOLS}
 
-# ── LLM ───────────────────────────────────────────────────────────────────────
 model            = ChatAnthropic(model="claude-sonnet-4-6")
 model_with_tools = model.bind_tools(ALL_TOOLS)
 extractor        = ChatAnthropic(model="claude-sonnet-4-6")
@@ -351,7 +343,6 @@ def extract_route_maps(reply, trip_info):
     built = [d for d in [build_day_map(d, trip_info.get("destination", "")) for d in days[:3]] if d]
     return {"days": built} if built else None
 
-# ── Schemas ───────────────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
@@ -362,64 +353,58 @@ class SessionSummary(BaseModel):
 class LoadResponse(BaseModel):
     session_id: str; trip_info: dict; messages: list
 
-# ── Streaming chat route ───────────────────────────────────────────────────────
 @app.post("/chat")
 async def chat(req: ChatRequest):
     sid = req.session_id or str(uuid.uuid4())
     history, visual_map = load_session(sid)
 
     async def generate():
-    full_reply = ""
-    try:
-        messages_list = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=req.message)]
+        full_reply = ""
+        try:
+            messages_list = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=req.message)]
 
-        yield f"data: {json.dumps({'type': 'session', 'session_id': sid})}\n\n"
+            yield f"data: {json.dumps({'type': 'session', 'session_id': sid})}\n\n"
 
-        while True:
-            gathered = None
+            while True:
+                gathered = None
 
-            # Stream tokens directly from Claude as they arrive
-            async for chunk in model_with_tools.astream(messages_list):
-                if gathered is None:
-                    gathered = chunk
-                else:
-                    gathered = gathered + chunk
+                async for chunk in model_with_tools.astream(messages_list):
+                    if gathered is None:
+                        gathered = chunk
+                    else:
+                        gathered = gathered + chunk
 
-                # Forward text tokens to frontend immediately
-                if chunk.content:
-                    if isinstance(chunk.content, str) and chunk.content:
-                        full_reply += chunk.content
-                        yield f"data: {json.dumps({'type': 'chunk', 'text': chunk.content})}\n\n"
-                    elif isinstance(chunk.content, list):
-                        for block in chunk.content:
-                            if isinstance(block, dict) and block.get('type') == 'text':
-                                text = block.get('text', '')
-                                if text:
-                                    full_reply += text
-                                    yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
+                    if chunk.content:
+                        if isinstance(chunk.content, str) and chunk.content:
+                            full_reply += chunk.content
+                            yield f"data: {json.dumps({'type': 'chunk', 'text': chunk.content})}\n\n"
+                        elif isinstance(chunk.content, list):
+                            for block in chunk.content:
+                                if isinstance(block, dict) and block.get('type') == 'text':
+                                    text = block.get('text', '')
+                                    if text:
+                                        full_reply += text
+                                        yield f"data: {json.dumps({'type': 'chunk', 'text': text})}\n\n"
 
-            # After stream ends, check for tool calls
-            if gathered and getattr(gathered, 'tool_calls', None):
-                messages_list.append(gathered)
-                full_reply = ""  # reset — more text coming after tools
-                for tc in gathered.tool_calls:
-                    fn = TOOLS_BY_NAME.get(tc["name"])
-                    if fn:
-                        yield f"data: {json.dumps({'type': 'tool', 'name': tc['name']})}\n\n"
-                        result = str(fn.invoke(tc["args"]))
-                        messages_list.append(ToolMessage(content=result, tool_call_id=tc["id"]))
-            else:
-                if gathered:
+                if gathered and getattr(gathered, 'tool_calls', None):
                     messages_list.append(gathered)
-                break
+                    full_reply = ""
+                    for tc in gathered.tool_calls:
+                        fn = TOOLS_BY_NAME.get(tc["name"])
+                        if fn:
+                            yield f"data: {json.dumps({'type': 'tool', 'name': tc['name']})}\n\n"
+                            result = str(fn.invoke(tc["args"]))
+                            messages_list.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+                else:
+                    if gathered:
+                        messages_list.append(gathered)
+                    break
 
-            # Post-processing (images, maps, trip info)
             trip_info  = extract_trip_info(history, req.message, full_reply)
             raw_places = extract_places(full_reply)
             places     = fetch_place_images(raw_places) if raw_places else []
             route_data = extract_route_maps(full_reply, trip_info)
 
-            # Save session
             history.append(HumanMessage(content=req.message))
             history.append(AIMessage(content=full_reply))
             new_idx = len(history) - 1
@@ -430,7 +415,6 @@ async def chat(req: ChatRequest):
                 }
             save_session(sid, history, trip_info, visual_map)
 
-            # Send final metadata
             yield f"data: {json.dumps({'type': 'done', 'session_id': sid, 'trip_info': trip_info, 'places': places or None, 'route_data': route_data})}\n\n"
 
         except Exception as e:
