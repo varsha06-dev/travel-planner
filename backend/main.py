@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 import uuid, json, os, urllib.request, urllib.parse, re, math
@@ -22,7 +22,6 @@ DATABASE_URL  = os.getenv("DATABASE_URL")
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Travel Planner API")
 
-# CORS — allow everything
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,7 +30,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Belt-and-suspenders: inject CORS header on EVERY response including errors
 @app.middleware("http")
 async def add_cors_header(request: Request, call_next):
     try:
@@ -60,8 +58,7 @@ def get_db():
     )
 
 def init_db():
-    conn = get_db()
-    cur  = conn.cursor()
+    conn = get_db(); cur = conn.cursor()
     try:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -104,13 +101,11 @@ def deserialize_messages(raw):
     return messages, visual_map
 
 def fetch_as_dicts(cur):
-    """Return cursor rows as list of dicts using description."""
     if not cur.description: return []
     keys = [k[0] for k in cur.description]
     return [dict(zip(keys, row)) for row in cur.fetchall()]
 
 def fetch_one_dict(cur):
-    """Return single cursor row as dict using description."""
     if not cur.description: return None
     row = cur.fetchone()
     if not row: return None
@@ -328,17 +323,6 @@ Return ONLY JSON (max 3 days, 5 stops each):
 [{{"day":1,"title":"Short title","stops":[{{"name":"Exact place name","type":"hotel|attraction|restaurant|viewpoint|beach|market|museum|other"}}]}}]
 Return [] if no day-by-day plan with named places. Response: {reply}"""
 
-def run_agent(user_input, history):
-    messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=user_input)]
-    while True:
-        response = model_with_tools.invoke(messages)
-        messages.append(response)
-        if not response.tool_calls: break
-        for tc in response.tool_calls:
-            fn = TOOLS_BY_NAME.get(tc["name"])
-            if fn: messages.append(ToolMessage(content=str(fn.invoke(tc["args"])), tool_call_id=tc["id"]))
-    return response.content
-
 def llm_extract(prompt_template, **kwargs):
     try:
         raw = extractor.invoke([HumanMessage(content=prompt_template.format(**kwargs))]).content.strip()
@@ -372,40 +356,80 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
 
-class ChatResponse(BaseModel):
-    reply: str; session_id: str
-    trip_info: Optional[dict] = None
-    places: Optional[list] = None
-    route_data: Optional[dict] = None
-
 class SessionSummary(BaseModel):
     id: str; created_at: str; updated_at: str; trip_info: dict
 
 class LoadResponse(BaseModel):
     session_id: str; trip_info: dict; messages: list
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-@app.post("/chat", response_model=ChatResponse)
+# ── Streaming chat route ───────────────────────────────────────────────────────
+@app.post("/chat")
 async def chat(req: ChatRequest):
     sid = req.session_id or str(uuid.uuid4())
     history, visual_map = load_session(sid)
-    try:
-        reply      = run_agent(req.message, history)
-        trip_info  = extract_trip_info(history, req.message, reply)
-        raw_places = extract_places(reply)
-        places     = fetch_place_images(raw_places) if raw_places else []
-        route_data = extract_route_maps(reply, trip_info)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    history.append(HumanMessage(content=req.message))
-    history.append(AIMessage(content=reply))
-    new_idx = len(history) - 1
-    if places or route_data:
-        visual_map[new_idx] = {**({"places": places} if places else {}),
-                               **({"route_data": route_data} if route_data else {})}
-    save_session(sid, history, trip_info, visual_map)
-    return ChatResponse(reply=reply, session_id=sid, trip_info=trip_info,
-                        places=places or None, route_data=route_data)
+
+    async def generate():
+        full_reply = ""
+        try:
+            messages = [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=req.message)]
+
+            # Send session id immediately
+            yield f"data: {json.dumps({'type': 'session', 'session_id': sid})}\n\n"
+
+            # Run agent (with tool calls)
+            while True:
+                response = model_with_tools.invoke(messages)
+                messages.append(response)
+
+                if response.tool_calls:
+                    for tc in response.tool_calls:
+                        fn = TOOLS_BY_NAME.get(tc["name"])
+                        if fn:
+                            # Tell frontend we're searching
+                            yield f"data: {json.dumps({'type': 'tool', 'name': tc['name']})}\n\n"
+                            result = str(fn.invoke(tc["args"]))
+                            messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+                else:
+                    full_reply = response.content
+                    # Stream text word by word
+                    words = full_reply.split(" ")
+                    for i, word in enumerate(words):
+                        chunk = word + (" " if i < len(words) - 1 else "")
+                        yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+                    break
+
+            # Post-processing (images, maps, trip info)
+            trip_info  = extract_trip_info(history, req.message, full_reply)
+            raw_places = extract_places(full_reply)
+            places     = fetch_place_images(raw_places) if raw_places else []
+            route_data = extract_route_maps(full_reply, trip_info)
+
+            # Save session
+            history.append(HumanMessage(content=req.message))
+            history.append(AIMessage(content=full_reply))
+            new_idx = len(history) - 1
+            if places or route_data:
+                visual_map[new_idx] = {
+                    **({"places": places} if places else {}),
+                    **({"route_data": route_data} if route_data else {}),
+                }
+            save_session(sid, history, trip_info, visual_map)
+
+            # Send final metadata
+            yield f"data: {json.dumps({'type': 'done', 'session_id': sid, 'trip_info': trip_info, 'places': places or None, 'route_data': route_data})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
 
 @app.get("/sessions", response_model=list[SessionSummary])
 async def get_sessions(): return list_sessions()
