@@ -29,14 +29,42 @@ export default function Message({ message, isMobile }) {
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: pad, animation: 'fadeSlideIn 0.25s ease' }}>
       <div style={avatarStyle}><div style={avatarInner}>✦</div></div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: isMobile ? '92%' : '72%' }}>
-        <div style={botBubble}>
-          <div className="prose">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+
+        {/* Tool use indicator */}
+        {message.toolUse && (
+          <div style={{ fontSize: '0.78rem', color: 'var(--accent-dark)', background: 'var(--accent-soft)', padding: '6px 12px', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+            {message.toolUse}
           </div>
-        </div>
-        {message.route_data?.days?.length > 0 && <RouteMap routeData={message.route_data} isMobile={isMobile} />}
-        {!message.route_data && message.places?.length > 0 && <PlacesGallery places={message.places} />}
+        )}
+
+        {/* Main bubble */}
+        {(message.content || message.streaming) && (
+          <div style={botBubble}>
+            <div className="prose">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            </div>
+            {/* Blinking cursor while streaming */}
+            {message.streaming && (
+              <span style={{ display: 'inline-block', width: 2, height: '1em', background: 'var(--accent)', marginLeft: 2, verticalAlign: 'text-bottom', animation: 'blink 0.8s step-end infinite' }} />
+            )}
+          </div>
+        )}
+
+        {/* Visuals shown after streaming completes */}
+        {!message.streaming && message.route_data?.days?.length > 0 && (
+          <RouteMap routeData={message.route_data} isMobile={isMobile} />
+        )}
+        {!message.streaming && !message.route_data && message.places?.length > 0 && (
+          <PlacesGallery places={message.places} />
+        )}
       </div>
+
+      <style>{`
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+        @keyframes spin  { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes fadeSlideIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+      `}</style>
     </div>
   )
 }
